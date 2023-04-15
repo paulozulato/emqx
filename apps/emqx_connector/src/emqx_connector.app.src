@@ -17,6 +17,7 @@
         mongodb,
         ehttpc,
         jose,
+        jamdb_oracle,
         emqx,
         emqtt
     ]},

@@ -13,7 +13,8 @@
         erlcloud,
         rocketmq,
         ecql,
-        odbc
+        odbc,
+        jamdb_oracle
     ]},
     {env, []},
     {modules, []},

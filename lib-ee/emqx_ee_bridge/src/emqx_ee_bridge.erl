@@ -35,7 +35,8 @@ api_schemas(Method) ->
         ref(emqx_ee_bridge_dynamo, Method),
         ref(emqx_ee_bridge_rocketmq, Method),
         ref(emqx_ee_bridge_cassa, Method),
-        ref(emqx_ee_bridge_sqlserver, Method)
+        ref(emqx_ee_bridge_sqlserver, Method),
+        ref(emqx_ee_bridge_oracle, Method)
     ].
 
 schema_modules() ->
@@ -55,7 +56,8 @@ schema_modules() ->
         emqx_ee_bridge_dynamo,
         emqx_ee_bridge_rocketmq,
         emqx_ee_bridge_cassa,
-        emqx_ee_bridge_sqlserver
+        emqx_ee_bridge_sqlserver,
+        emqx_ee_bridge_oracle
     ].
 
 examples(Method) ->
@@ -94,7 +96,8 @@ resource_type(clickhouse) -> emqx_ee_connector_clickhouse;
 resource_type(dynamo) -> emqx_ee_connector_dynamo;
 resource_type(rocketmq) -> emqx_ee_connector_rocketmq;
 resource_type(cassandra) -> emqx_ee_connector_cassa;
-resource_type(sqlserver) -> emqx_ee_connector_sqlserver.
+resource_type(sqlserver) -> emqx_ee_connector_sqlserver;
+resource_type(oracle) -> emqx_ee_connector_oracle.
 
 fields(bridges) ->
     [
@@ -151,6 +154,14 @@ fields(bridges) ->
                 hoconsc:map(name, ref(emqx_ee_bridge_cassa, "config")),
                 #{
                     desc => <<"Cassandra Bridge Config">>,
+                    required => false
+                }
+            )},
+        {oracle,
+            mk(
+                hoconsc:map(name, ref(emqx_ee_bridge_oracle, "config")),
+                #{
+                    desc => <<"Oracle Bridge Config">>,
                     required => false
                 }
             )}
