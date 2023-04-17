@@ -1,0 +1,15 @@
+{application, emqx_oracle, [
+    {description, "EMQX Enterprise Oracle Database Connector"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {emqx_oracle_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        jamdb_oracle
+    ]},
+    {env, []},
+    {modules, []},
+
+    {links, []}
+]}.

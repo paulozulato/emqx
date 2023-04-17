@@ -439,6 +439,8 @@ relx_apps_per_edition(ee) ->
         emqx_ee_connector,
         emqx_ee_bridge,
         emqx_bridge_kafka,
+        emqx_bridge_oracle,
+        emqx_oracle,
         emqx_ee_schema_registry
     ];
 relx_apps_per_edition(ce) ->

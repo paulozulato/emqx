@@ -1,7 +1,7 @@
 %%--------------------------------------------------------------------
 %% Copyright (c) 2023 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%--------------------------------------------------------------------
--module(emqx_ee_bridge_oracle).
+-module(emqx_bridge_oracle).
 
 -include_lib("typerefl/include/types.hrl").
 -include_lib("hocon/include/hoconsc.hrl").
@@ -56,7 +56,7 @@ values(_Method) ->
             batch_size => ?DEFAULT_BATCH_SIZE,
             batch_time => ?DEFAULT_BATCH_TIME,
             query_mode => async,
-            max_queue_bytes => ?DEFAULT_QUEUE_SIZE
+            max_buffer_bytes => ?DEFAULT_BUFFER_BYTES
         }
     }.
 
@@ -81,7 +81,7 @@ fields("config") ->
                 #{desc => ?DESC("local_topic"), default => undefined}
             )}
     ] ++ emqx_resource_schema:fields("resource_opts") ++
-        (emqx_ee_connector_oracle:fields(config) --
+        (emqx_oracle:fields(config) --
             emqx_connector_schema_lib:prepare_statement_fields());
 fields("creation_opts") ->
     emqx_resource_schema:fields("creation_opts");

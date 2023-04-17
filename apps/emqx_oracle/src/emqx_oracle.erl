@@ -2,15 +2,12 @@
 %% Copyright (c) 2023 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%--------------------------------------------------------------------
 
--module(emqx_ee_connector_oracle).
+-module(emqx_oracle).
 
 -behaviour(emqx_resource).
 
 -include_lib("emqx_connector/include/emqx_connector.hrl").
--include_lib("kernel/include/file.hrl").
 -include_lib("emqx/include/logger.hrl").
--include_lib("emqx_resource/include/emqx_resource.hrl").
--include_lib("emqx_ee_connector/include/emqx_ee_connector.hrl").
 
 -include_lib("typerefl/include/types.hrl").
 -include_lib("hocon/include/hoconsc.hrl").
@@ -117,7 +114,7 @@ on_start(
     ?SLOG(info, #{
         msg => "starting_oracle_connector",
         connector => InstId,
-        config => emqx_misc:redact(Config)
+        config => emqx_utils:redact(Config)
     }),
     {ok, _} = application:ensure_all_started(ecpool),
     {ok, _} = application:ensure_all_started(jamdb_oracle),

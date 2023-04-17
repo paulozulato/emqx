@@ -154,7 +154,8 @@ defmodule EMQXUmbrella.MixProject do
   # need to remove those when listing `/apps/`...
   defp enterprise_umbrella_apps() do
     MapSet.new([
-      :emqx_bridge_kafka
+      :emqx_bridge_kafka,
+      :emqx_bridge_oracle
     ])
   end
 
@@ -344,6 +345,8 @@ defmodule EMQXUmbrella.MixProject do
           emqx_ee_connector: :permanent,
           emqx_ee_bridge: :permanent,
           emqx_bridge_kafka: :permanent,
+          emqx_bridge_oracle: :permanent,
+          emqx_oracle: :permanent,
           emqx_ee_schema_registry: :permanent
         ],
         else: []

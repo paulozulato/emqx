@@ -1,0 +1,15 @@
+{application, emqx_bridge_oracle, [
+    {description, "EMQX Enterprise Oracle Database Bridge"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {emqx_bridge_oracle_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        emqx_oracle
+    ]},
+    {env, []},
+    {modules, []},
+
+    {links, []}
+]}.
