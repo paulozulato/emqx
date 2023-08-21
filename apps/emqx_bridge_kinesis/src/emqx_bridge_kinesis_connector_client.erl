@@ -7,6 +7,7 @@
 -include_lib("snabbkaffe/include/snabbkaffe.hrl").
 -include_lib("emqx_resource/include/emqx_resource.hrl").
 -include_lib("erlcloud/include/erlcloud_aws.hrl").
+-include_lib("emqx/include/logger.hrl").
 
 -behaviour(gen_server).
 
@@ -117,17 +118,45 @@ init(#{
             {ok, State};
         {error, Reason} ->
             ?tp(kinesis_init_failed, #{instance_id => InstanceId, reason => Reason}),
+            ?SLOG(error, #{
+                msg => "failed_to_list_stream",
+                instance_id => InstanceId,
+                stream_name => StreamName,
+                reason => Reason
+            }),
             {stop, Reason}
     end.
 
-handle_call(connection_status, _From, #{stream_name := StreamName} = State) ->
+handle_call(
+    connection_status, _From, #{stream_name := StreamName, instance_id := InstanceId} = State
+) ->
     Status =
         case erlcloud_kinesis:describe_stream(StreamName) of
             {ok, _} ->
                 {ok, connected};
             {error, {<<"ResourceNotFoundException">>, _}} ->
-                {error, unhealthy_target};
+                ?SLOG(error, #{
+                    msg => "failed_to_describe_stream",
+                    instance_id => InstanceId,
+                    stream_name => StreamName,
+                    reason => "Resource not found"
+                }),
+                {error, resource_not_found};
+            {error, {<<"AccessDeniedException">>, _}} ->
+                ?SLOG(error, #{
+                    msg => "failed_to_describe_stream",
+                    instance_id => InstanceId,
+                    stream_name => StreamName,
+                    reason => "Access denied"
+                }),
+                {error, access_denied};
             Error ->
+                ?SLOG(error, #{
+                    msg => "failed_to_describe_stream",
+                    instance_id => InstanceId,
+                    stream_name => StreamName,
+                    reason => Error
+                }),
                 {error, Error}
         end,
     {reply, Status, State};

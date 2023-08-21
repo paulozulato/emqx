@@ -10,7 +10,12 @@
 
 -define(HEALTH_CHECK_TIMEOUT, 15000).
 -define(TOPIC_MESSAGE,
-    "Kinesis stream is invalid. Please check if the stream exist in Kinesis account."
+    "Kinesis stream is invalid. Please check the logs, check if the stream exist "
+    "in Kinesis account and if service account has permissions to use it."
+).
+-define(PERMISSION_MESSAGE,
+    "Permission denied while interacting with endpoint. Please check that the "
+    "provided service account has the correct permissions configured."
 ).
 
 -type config() :: #{
@@ -102,18 +107,21 @@ on_get_status(_InstanceId, #{pool_name := Pool} = State) ->
             #{return_values => true}
         )
     of
-        {ok, Values} ->
-            AllOk = lists:all(fun(S) -> S =:= {ok, connected} end, Values),
-            case AllOk of
-                true ->
-                    connected;
-                false ->
-                    Unhealthy = lists:any(fun(S) -> S =:= {error, unhealthy_target} end, Values),
-                    case Unhealthy of
-                        true -> {disconnected, State, {unhealthy_target, ?TOPIC_MESSAGE}};
-                        false -> disconnected
-                    end
-            end;
+        {ok, Result} ->
+            lists:foldl(
+                fun
+                    ({error, resource_not_found}, connected = _Acc) ->
+                        {disconnected, State, {unhealthy_target, ?TOPIC_MESSAGE}};
+                    ({error, access_denied}, connected = _Acc) ->
+                        {disconnected, State, {unhealthy_target, ?PERMISSION_MESSAGE}};
+                    ({error, Reason}, connected = _Acc) ->
+                        {disconnected, State, Reason};
+                    (_, Acc) ->
+                        Acc
+                end,
+                connected,
+                Result
+            );
         {error, Reason} ->
             ?SLOG(error, #{
                 msg => "kinesis_producer_get_status_failed",
@@ -162,7 +170,7 @@ connect(Opts) ->
     [{send_message, map()}],
     state()
 ) ->
-    {ok, jsx:json_term() | binary()}
+    {ok, non_neg_integer()}
     | {error, {recoverable_error, term()}}
     | {error, {unrecoverable_error, {invalid_request, term()}}}
     | {error, {unrecoverable_error, {unhealthy_target, string()}}}
@@ -181,8 +189,61 @@ do_send_requests_sync(
     ),
     handle_result(Result, Requests, InstanceId).
 
-handle_result({ok, _} = Result, _Requests, _InstanceId) ->
-    Result;
+handle_result({ok, Result}, Requests, InstanceId) ->
+    RequestCount = length(Requests),
+    FailedMsgCount = proplists:get_value(<<"FailedRecordCount">>, Result, 0),
+    case FailedMsgCount of
+        0 ->
+            %% zero can mean a single Request success (so there is no FailedRecordCount field
+            %% in the response) or all Requests were succeed. In any case, there was no
+            %% error processing the request.
+            ?tp(emqx_bridge_kinesis_impl_producer_msg_ok, #{count => RequestCount}),
+            {ok, RequestCount};
+        _ ->
+            %% non-zero means that some (or all) message in the request has failed. The possible
+            %% reasons are limited to "ProvisionedThroughputExceededException" or "InternalFailure"
+            %% (https://docs.aws.amazon.com/kinesis/latest/APIReference/API_PutRecords.html) and
+            %% both results will be handled as recoverable error, so all Requests might be retried
+            %% as we do not support partial success on batch requests.
+            %% @TODO: support partial success on batch requests
+            {OkCount, ThroughputCount, InternalErrorCount} = lists:foldl(
+                fun(RecordResult, {OkCount, ThroughputCount, InternalErrorCount}) ->
+                    case proplists:get_value(<<"ErrorCode">>, RecordResult, undefined) of
+                        undefined ->
+                            {OkCount + 1, ThroughputCount, InternalErrorCount};
+                        <<"ProvisionedThroughputExceededException">> ->
+                            {OkCount, ThroughputCount + 1, InternalErrorCount};
+                        <<"InternalFailure">> ->
+                            {OkCount, ThroughputCount, InternalErrorCount + 1}
+                    end
+                end,
+                {0, 0, 0},
+                proplists:get_value(<<"Records">>, Result, [])
+            ),
+            ResultSummary = #{
+                succeed => OkCount,
+                throughput_exceeded => ThroughputCount,
+                internal_error => InternalErrorCount
+            },
+            ?SLOG(error, #{
+                msg => "kinesis_error_response",
+                request => Requests,
+                connector => InstanceId,
+                result => ResultSummary
+            }),
+            ?tp(emqx_bridge_kinesis_impl_producer_msg_failed, #{result => ResultSummary}),
+            {error, {recoverable_error, ResultSummary}}
+    end;
+% handle_result(
+%     {error, {<<"ProvisionedThroughputExceededException">>, _} = Reason}, Requests, InstanceId
+% ) ->
+%     ?SLOG(error, #{
+%         msg => "kinesis_error_response",
+%         request => Requests,
+%         connector => InstanceId,
+%         reason => Reason
+%     }),
+%     {error, {recoverable_error, Reason}};
 handle_result({error, {<<"ResourceNotFoundException">>, _} = Reason}, Requests, InstanceId) ->
     ?SLOG(error, #{
         msg => "kinesis_error_response",
@@ -190,17 +251,16 @@ handle_result({error, {<<"ResourceNotFoundException">>, _} = Reason}, Requests, 
         connector => InstanceId,
         reason => Reason
     }),
+    ?tp(emqx_bridge_kinesis_impl_producer_msg_failed, #{result => <<"ResourceNotFoundException">>}),
     {error, {unrecoverable_error, {unhealthy_target, ?TOPIC_MESSAGE}}};
-handle_result(
-    {error, {<<"ProvisionedThroughputExceededException">>, _} = Reason}, Requests, InstanceId
-) ->
+handle_result({error, {<<"AccessDeniedException">>, _} = Reason}, Requests, InstanceId) ->
     ?SLOG(error, #{
         msg => "kinesis_error_response",
         request => Requests,
         connector => InstanceId,
         reason => Reason
     }),
-    {error, {recoverable_error, Reason}};
+    {error, {unrecoverable_error, {unhealthy_target, ?PERMISSION_MESSAGE}}};
 handle_result({error, {<<"InvalidArgumentException">>, _} = Reason}, Requests, InstanceId) ->
     ?SLOG(error, #{
         msg => "kinesis_error_response",
@@ -208,14 +268,25 @@ handle_result({error, {<<"InvalidArgumentException">>, _} = Reason}, Requests, I
         connector => InstanceId,
         reason => Reason
     }),
+    ?tp(emqx_bridge_kinesis_impl_producer_msg_failed, #{result => <<"InvalidArgumentException">>}),
     {error, {unrecoverable_error, Reason}};
-handle_result({error, {econnrefused = Reason, _}}, Requests, InstanceId) ->
+handle_result({error, {<<"ValidationException">>, _} = Reason}, Requests, InstanceId) ->
     ?SLOG(error, #{
         msg => "kinesis_error_response",
         request => Requests,
         connector => InstanceId,
         reason => Reason
     }),
+    ?tp(emqx_bridge_kinesis_impl_producer_msg_failed, #{result => <<"ValidationException">>}),
+    {error, {unrecoverable_error, Reason}};
+handle_result({error, {econnrefused = Reason, _} = Error}, Requests, InstanceId) ->
+    ?SLOG(error, #{
+        msg => "kinesis_error_response",
+        request => Requests,
+        connector => InstanceId,
+        reason => Reason
+    }),
+    ?tp(emqx_bridge_kinesis_impl_producer_msg_failed, #{result => Error}),
     {error, {recoverable_error, Reason}};
 handle_result({error, Reason} = Error, Requests, InstanceId) ->
     ?SLOG(error, #{
@@ -224,6 +295,7 @@ handle_result({error, Reason} = Error, Requests, InstanceId) ->
         connector => InstanceId,
         reason => Reason
     }),
+    ?tp(emqx_bridge_kinesis_impl_producer_msg_failed, #{result => Error}),
     Error.
 
 parse_template(Config) ->

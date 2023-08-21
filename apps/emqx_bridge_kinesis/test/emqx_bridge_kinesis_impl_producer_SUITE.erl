@@ -28,10 +28,11 @@ all() ->
     ].
 
 groups() ->
-    TCs = emqx_common_test_helpers:all(?MODULE),
+    AllTCs = emqx_common_test_helpers:all(?MODULE),
+    BatchOnlyTCs = [t_publish_batch_msgs_partial_success],
     [
-        {with_batch, TCs},
-        {without_batch, TCs}
+        {with_batch, AllTCs},
+        {without_batch, AllTCs -- BatchOnlyTCs}
     ].
 
 init_per_suite(Config) ->
@@ -58,7 +59,7 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_group(with_batch, Config) ->
-    [{batch_size, 100} | Config];
+    [{batch_size, 10} | Config];
 init_per_group(without_batch, Config) ->
     [{batch_size, 1} | Config];
 init_per_group(_Group, Config) ->
@@ -670,6 +671,92 @@ t_publish_multiple_msgs_success(Config) ->
     ),
     ok.
 
+t_publish_batch_msgs_partial_success(Config) ->
+    ResourceId = ?config(resource_id, Config),
+    TelemetryTable = ?config(telemetry_table, Config),
+    ?assertMatch({ok, _}, create_bridge([{batch_size, 6} | Config])),
+    {ok, #{<<"id">> := RuleId}} = create_rule_and_action_http(Config),
+    emqx_common_test_helpers:on_exit(fun() -> ok = emqx_rule_engine:delete_rule(RuleId) end),
+    assert_empty_metrics(ResourceId),
+    emqx_common_test_helpers:with_mock(
+        erlcloud_kinesis,
+        put_records,
+        fun(_StreamName, _Records) ->
+            {ok, [
+                {<<"FailedRecordCount">>, 5},
+                {<<"Records">>, [
+                    [
+                        {<<"SequenceNumber">>,
+                            <<"49643812857897232461400911110543446132216867492649238530">>},
+                        {<<"ShardId">>, <<"shardId-000000000000">>}
+                    ],
+                    [
+                        {<<"ErrorCode">>, <<"InternalFailure">>},
+                        {<<"ErrorMessage">>, <<"Internal service failure.">>}
+                    ],
+                    [
+                        {<<"ErrorCode">>, <<"InternalFailure">>},
+                        {<<"ErrorMessage">>, <<"Internal service failure.">>}
+                    ],
+                    [
+                        {<<"ErrorCode">>, <<"ProvisionedThroughputExceededException">>},
+                        {<<"ErrorMessage">>,
+                            <<"Rate exceeded for shard shardId-000000000000 in stream my_stream under account 000.">>}
+                    ],
+                    [
+                        {<<"ErrorCode">>, <<"ProvisionedThroughputExceededException">>},
+                        {<<"ErrorMessage">>,
+                            <<"Rate exceeded for shard shardId-000000000000 in stream my_stream under account 000.">>}
+                    ],
+                    [
+                        {<<"ErrorCode">>, <<"ProvisionedThroughputExceededException">>},
+                        {<<"ErrorMessage">>,
+                            <<"Rate exceeded for shard shardId-000000000000 in stream my_stream under account 000.">>}
+                    ]
+                ]}
+            ]}
+        end,
+        fun() ->
+            ?wait_async_action(
+                lists:foreach(
+                    fun(I) ->
+                        Payload = "payload_" ++ to_str(I),
+                        Message = emqx_message:make(?TOPIC, Payload),
+                        emqx:publish(Message)
+                    end,
+                    lists:seq(1, 6)
+                ),
+                #{
+                    ?snk_kind := emqx_bridge_kinesis_impl_producer_msg_failed,
+                    result := #{
+                        succeed := 1,
+                        internal_error := 2,
+                        throughput_exceeded := 3
+                    }
+                },
+                5_000
+            )
+        end
+    ),
+    %% to avoid test flakiness
+    wait_telemetry_event(TelemetryTable, retried_success, ResourceId),
+    wait_until_gauge_is(queuing, 0, 500),
+    wait_until_gauge_is(inflight, 0, 500),
+    assert_metrics(
+        #{
+            dropped => 0,
+            failed => 0,
+            inflight => 0,
+            matched => 6,
+            queuing => 0,
+            retried => 6,
+            retried_success => 6,
+            success => 6
+        },
+        ResourceId
+    ),
+    ok.
+
 t_publish_unhealthy(Config) ->
     ResourceId = ?config(resource_id, Config),
     TelemetryTable = ?config(telemetry_table, Config),
@@ -758,7 +845,7 @@ t_publish_connection_down(Config0) ->
     Payload = <<"payload">>,
     Message = emqx_message:make(?TOPIC, Payload),
     Kind =
-        case proplists:get_value(batch_size, Config) of
+        case ?config(batch_size, Config) of
             1 -> emqx_bridge_kinesis_impl_producer_sync_query;
             _ -> emqx_bridge_kinesis_impl_producer_sync_batch_query
         end,
@@ -904,6 +991,20 @@ t_empty_payload_template(Config) ->
     ok.
 
 t_validate_static_constraints(Config) ->
+    % From <https://docs.aws.amazon.com/kinesis/latest/APIReference/API_PutRecords.html>:
+    % "Each PutRecords request can support up to 500 records.
+    %  Each record in the request can be as large as 1 MiB,
+    %  up to a limit of 5 MiB for the entire request, including partition keys."
+    %
+    % Message size and request size shall be controlled by user, so there is no validators
+    % for them - if exceeded, it will fail like on `t_publish_big_msg` test.
+    ?assertThrow(
+        {emqx_bridge_schema, [#{kind := validation_error, value := 501}]},
+        generate_config([{batch_size, 501} | Config])
+    ),
+    ok.
+
+t_validate_dynamic_constraints(Config) ->
     % From <https://docs.aws.amazon.com/kinesis/latest/APIReference/API_PutRecords.html>:
     % "Each PutRecords request can support up to 500 records.
     %  Each record in the request can be as large as 1 MiB,
